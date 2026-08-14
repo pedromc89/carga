@@ -154,18 +154,42 @@ const addDia = (d,n=1)=>{const [y,m,dd]=d.split("-").map(Number);
   const t=new Date(Date.UTC(y,m-1,dd+n));return t.toISOString().slice(0,10);};
 const dowOf = d => {const [y,m,dd]=d.split("-").map(Number);return new Date(Date.UTC(y,m-1,dd)).getUTCDay();};
 
-/* ---------- IndexedDB ---------- */
+/* ---------- IndexedDB (com timeout e fallback em memória) ---------- */
 const DB="cargaDB", STORE="records";
-function idb(){return new Promise((res,rej)=>{const r=indexedDB.open(DB,1);
-  r.onupgradeneeded=()=>{const db=r.result;
-    if(!db.objectStoreNames.contains(STORE))db.createObjectStore(STORE);};
-  r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);});}
-async function idbGet(k){const db=await idb();return new Promise((res,rej)=>{
-  const t=db.transaction(STORE,"readonly").objectStore(STORE).get(k);
-  t.onsuccess=()=>res(t.result); t.onerror=()=>rej(t.error);});}
-async function idbSet(k,v){const db=await idb();return new Promise((res,rej)=>{
-  const t=db.transaction(STORE,"readwrite").objectStore(STORE).put(v,k);
-  t.onsuccess=()=>res(); t.onerror=()=>rej(t.error);});}
+let idbIndisponivel=false;
+const memStore={};  // fallback se o IndexedDB falhar/travar (ex.: navegação privada)
+
+function idb(){return new Promise((res,rej)=>{
+  let done=false;
+  const to=setTimeout(()=>{ if(!done){done=true;idbIndisponivel=true;rej(new Error("idb timeout"));} },2500);
+  try{
+    const r=indexedDB.open(DB,1);
+    r.onupgradeneeded=()=>{const db=r.result;
+      if(!db.objectStoreNames.contains(STORE))db.createObjectStore(STORE);};
+    r.onsuccess=()=>{ if(!done){done=true;clearTimeout(to);res(r.result);} };
+    r.onerror=()=>{ if(!done){done=true;clearTimeout(to);idbIndisponivel=true;rej(r.error||new Error("idb error"));} };
+    r.onblocked=()=>{ if(!done){done=true;clearTimeout(to);idbIndisponivel=true;rej(new Error("idb blocked"));} };
+  }catch(e){ if(!done){done=true;clearTimeout(to);idbIndisponivel=true;rej(e);} }
+});}
+async function idbGet(k){
+  if(idbIndisponivel) return memStore[k];
+  try{
+    const db=await idb();
+    return await new Promise((res,rej)=>{
+      const t=db.transaction(STORE,"readonly").objectStore(STORE).get(k);
+      t.onsuccess=()=>res(t.result); t.onerror=()=>rej(t.error);});
+  }catch(e){ idbIndisponivel=true; return memStore[k]; }
+}
+async function idbSet(k,v){
+  memStore[k]=v; // sempre guarda em memória como espelho
+  if(idbIndisponivel) return;
+  try{
+    const db=await idb();
+    return await new Promise((res,rej)=>{
+      const t=db.transaction(STORE,"readwrite").objectStore(STORE).put(v,k);
+      t.onsuccess=()=>res(); t.onerror=()=>rej(t.error);});
+  }catch(e){ idbIndisponivel=true; }
+}
 
 /* ---------- parser do export (dois formatos) ---------- */
 const KJ_POR_KCAL = 4.184;
@@ -678,8 +702,31 @@ let toastT;
 function toast(msg){const t=document.getElementById("toast");t.textContent=msg;
   t.classList.add("show");clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove("show"),2600);}
 
-async function loadState(){const store=await idbGet("store");
-  STATE = store?computeAll(store):null; render();}
+async function loadState(){
+  // desenha a interface imediatamente (mesmo sem dados), para nunca ficar tela vazia
+  try{ STATE=null; render(); }catch(e){ mostrarErro(e); }
+  // depois tenta carregar o histórico salvo
+  try{
+    const store=await idbGet("store");
+    STATE = store?computeAll(store):null;
+    render();
+    if(idbIndisponivel) avisoArmazenamento();
+  }catch(e){ console.error(e); mostrarErro(e); }
+}
+function mostrarErro(e){
+  const app=document.getElementById("app");
+  const empty=document.getElementById("empty");
+  if(empty)empty.classList.add("hidden");
+  if(app)app.innerHTML='<div class="card"><h2 style="margin:0 0 8px">Algo travou ao desenhar</h2>'+
+    '<p style="color:var(--muted);font-size:13px;line-height:1.6;margin:0">'+
+    'Detalhe técnico: '+String(e&&e.message?e.message:e).replace(/</g,"&lt;")+
+    '<br>O botão Importar embaixo continua funcionando — tente importar um arquivo.</p></div>';
+}
+function avisoArmazenamento(){
+  const sub=document.getElementById("subtitle");
+  if(sub)sub.innerHTML="⚠︎ O navegador bloqueou o armazenamento permanente (comum em Navegação Privada). "+
+    "O app funciona, mas <b>não guarda o histórico ao fechar</b>. Use o Safari normal, não privado.";
+}
 
 document.getElementById("importBtn").onclick=()=>document.getElementById("fileInput").click();
 document.getElementById("fileInput").onchange=async(e)=>{
