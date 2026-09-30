@@ -869,33 +869,43 @@ async function sincronizarDrive(silencioso){
     marcarConectado(true); atualizaBotaoDrive();
 
     let store=(await idbGet("store"))||{daily:{},workouts:[],sleep:{},rhr:{}};
-    let totNovos=0,totTreinos=0,totSono=0,arqs=0,falhas=0,pastasVazias=0;
+    let totNovos=0,totTreinos=0,totSono=0,falhas=0;
+    const diag=[]; let achouAlguma=false;
 
     for(const nome of GDRIVE.pastas){
       sync("Lendo pasta "+nome+"…");
       const pid=await acharPasta(nome);
-      if(!pid){ pastasVazias++; continue; }
+      if(!pid){ diag.push(nome+": não achada"); continue; }
+      achouAlguma=true;
       const files=await listarArquivos(pid);
+      let lidos=0;
       for(const f of files){
         try{
           const j=await baixarJson(f.id);
           const r=mergeInto(store,parseExport(j));
-          store=r.store; totNovos+=r.novos; totTreinos+=r.novosTreinos; totSono+=r.novoSono; arqs++;
+          store=r.store; totNovos+=r.novos; totTreinos+=r.novosTreinos; totSono+=r.novoSono; lidos++;
         }catch(err){ console.error(f.name,err); falhas++; }
       }
+      diag.push(nome+": "+files.length+" arq");
     }
 
     await idbSet("store",store);
     STATE=computeAll(store); render();
 
-    const p=[];
-    if(totNovos)p.push(`${totNovos} dia(s)`);
-    if(totTreinos)p.push(`${totTreinos} treino(s)`);
-    if(totSono)p.push(`${totSono} noite(s)`);
-    let msg = arqs? (p.length?`Drive: + ${p.join(" · ")}`:"Drive: tudo atualizado") : "Nenhum arquivo novo no Drive";
-    if(pastasVazias===GDRIVE.pastas.length) msg="Pastas não encontradas no Drive";
-    if(falhas)msg+=` · ${falhas} falha(s)`;
-    sync(""); toast(msg);
+    if(!achouAlguma){
+      // nenhuma pasta bateu — mostra as pastas que EXISTEM no Drive, para acharmos o nome certo
+      const nomes=(await todasPastas()).map(f=>f.name).slice(0,15).join(", ");
+      sync("Pastas não achadas. No Drive existem: "+(nomes||"nenhuma"));
+      toast("Pastas não achadas — veja a lista embaixo");
+    } else {
+      const p=[];
+      if(totNovos)p.push(`+${totNovos} dia(s)`);
+      if(totTreinos)p.push(`+${totTreinos} treino(s)`);
+      if(totSono)p.push(`+${totSono} noite(s)`);
+      let msg = (p.length? p.join(" · ") : "sem novidades") + "  ·  " + diag.join(" · ");
+      if(falhas)msg+=` · ${falhas} falha(s)`;
+      sync(msg); toast("Sincronizado");
+    }
   }catch(err){
     console.error(err); sync("");
     const m=String(err&&err.message||err);
