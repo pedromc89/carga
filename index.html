@@ -830,11 +830,22 @@ async function driveGet(url){
   return r;
 }
 
-async function acharPasta(nome){
-  const q=`name='${nome.replace(/'/g,"\\'")}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-  const url="https://www.googleapis.com/drive/v3/files?q="+encodeURIComponent(q)+"&fields=files(id,name)&pageSize=10";
+// normaliza texto: remove acento, minúsculas — para casar "Zepp diário" sem depender do acento
+const normNome=(s)=>String(s).normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().trim();
+let _pastasCache=null;
+async function todasPastas(){
+  if(_pastasCache) return _pastasCache;
+  const q="mimeType='application/vnd.google-apps.folder' and trashed=false";
+  const url="https://www.googleapis.com/drive/v3/files?q="+encodeURIComponent(q)+"&fields=files(id,name)&pageSize=1000";
   const j=await (await driveGet(url)).json();
-  return (j.files&&j.files[0])?j.files[0].id:null;
+  _pastasCache=j.files||[]; return _pastasCache;
+}
+async function acharPasta(nome){
+  const alvo=normNome(nome), prim=normNome(nome.split(" ")[0]);
+  const pastas=await todasPastas();
+  const hit=pastas.find(f=>normNome(f.name)===alvo)
+         || pastas.find(f=>normNome(f.name).startsWith(prim));
+  return hit?hit.id:null;
 }
 
 async function listarArquivos(pastaId){
@@ -853,6 +864,7 @@ async function baixarJson(id){
 async function sincronizarDrive(silencioso){
   try{
     sync("Conectando ao Drive…");
+    _pastasCache=null; // renova a lista de pastas a cada sincronização
     await pedirToken(silencioso);
     marcarConectado(true); atualizaBotaoDrive();
 
