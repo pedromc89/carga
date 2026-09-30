@@ -286,27 +286,25 @@ function parseHaeMetrics(j){
     and:and[d]!=null?Math.round(and[d]):null, s:0};});
   const rhr={}; Object.keys(rhrRaw).forEach(d=>rhr[d]=Math.round(rhrRaw[d]));
 
-  // sono: sleep_analysis (formato pode variar; cobrimos os campos mais comuns)
+  // sono: sleep_analysis — valores já em horas (units "hr")
   const sleep={};
   const sm=M.sleep_analysis||M.sleep;
+  const hnum=(v)=>{ const q=(typeof v==="object"&&v!=null)?v.qty:v; return (typeof q==="number")?q:null; };
   (sm?.data||[]).forEach(p=>{
-    const fim=haeDate(p.sleepEnd||p.endDate||p.date); if(!fim)return;
-    const d=fim.day;
-    // horas dormidas: tenta somar estágios; senão usa 'asleep'/'totalSleep'
-    const core=haeQty(p.core)||p.core||0;
-    const deep=haeQty(p.deep)||p.deep||0;
-    const rem=haeQty(p.rem)||p.rem||0;
-    let asleep = (p.asleep!=null?(haeQty(p.asleep)||p.asleep):null);
-    if(asleep==null){ const soma=core+deep+rem; asleep = soma>0?soma:null; }
-    if(asleep==null && p.totalSleep!=null) asleep=haeQty(p.totalSleep)||p.totalSleep;
-    const inBed = (p.inBed!=null?(haeQty(p.inBed)||p.inBed):null);
-    if(asleep==null) return;
-    // valores podem vir em horas (HAE costuma exportar em horas)
-    const h = asleep>16 ? asleep/60 : asleep; // se parecer minutos, converte
+    const dref=haeDate(p.date||p.sleepEnd||p.inBedEnd); if(!dref)return;
+    const d=dref.day;
+    const core=hnum(p.core)||0, deep=hnum(p.deep)||0, rem=hnum(p.rem)||0;
+    const soma=core+deep+rem;
+    // horas dormidas: totalSleep é o valor real; asleep costuma vir 0
+    let h=hnum(p.totalSleep);
+    if(h==null||h<=0) h = soma>0?soma:null;
+    if(h==null){ const a=hnum(p.asleep); if(a>0) h=a; }
+    if(h==null) return;
+    const inBed=hnum(p.inBed);
     sleep[d]={d, h:+h.toFixed(3),
-      efic: inBed? +(asleep/inBed*100).toFixed(1) : null,
-      prof: deep? +((deep>16?deep/60:deep)).toFixed(2) : 0,
-      rem:  rem?  +((rem>16?rem/60:rem)).toFixed(2)   : 0};
+      efic: inBed>0 ? +(h/inBed*100).toFixed(1) : null,
+      prof: +deep.toFixed(2),
+      rem:  +rem.toFixed(2)};
   });
 
   return {daily, workouts:[], sleep, rhr};
