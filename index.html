@@ -86,7 +86,13 @@ svg{display:block;width:100%;overflow:visible}
 .toast.show{opacity:1}
 .range{display:flex;gap:5px;margin-bottom:14px}
 .dot-tip{font-family:var(--mono);font-size:10px}
+.btn.drive{background:var(--panelHi);color:var(--text);border:1px solid var(--cool);flex:0 0 auto;padding:13px 15px;display:flex;align-items:center;gap:7px}
+.btn.drive.on{border-color:var(--verde)}
+.drive-dot{width:8px;height:8px;border-radius:50%;background:var(--cool);flex-shrink:0}
+.btn.drive.on .drive-dot{background:var(--verde)}
+.syncmsg{position:fixed;left:0;right:0;bottom:calc(90px + env(safe-area-inset-bottom));text-align:center;font-family:var(--mono);font-size:11px;color:var(--cool);pointer-events:none;z-index:40}
 </style>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <div class="wrap">
@@ -105,11 +111,13 @@ svg{display:block;width:100%;overflow:visible}
 </div>
 
 <div class="dock">
-  <button class="btn primary" id="importBtn">Importar dados</button>
+  <button class="btn drive" id="driveBtn"><span class="drive-dot"></span><span id="driveLabel">Drive</span></button>
+  <button class="btn primary" id="importBtn">Importar</button>
   <button class="btn ghost" id="menuBtn">···</button>
 </div>
 <input type="file" id="fileInput" accept=".json,application/json" multiple class="hidden">
 <div class="toast" id="toast"></div>
+<div class="syncmsg" id="syncmsg"></div>
 
 <script>
 "use strict";
@@ -763,7 +771,140 @@ document.getElementById("menuBtn").onclick=async()=>{
     a.download="carga-backup.json";a.click();toast("Backup gerado");}
 };
 
-loadState();
+/* ========================================================
+   INTEGRAÇÃO GOOGLE DRIVE (somente leitura)
+   Lê as pastas "Zepp diário" (métricas) e "Treinos" (workouts),
+   pega os arquivos dos últimos ~30 dias e importa sozinho.
+======================================================== */
+const GDRIVE = {
+  clientId: "957013478220-h5f1d5u1lu32kp72qetfn0lbe5eobrsp.apps.googleusercontent.com",
+  scope: "https://www.googleapis.com/auth/drive.readonly",
+  pastas: ["Zepp diário", "Treinos"],
+  diasJanela: 30,
+};
+let gToken=null, gTokenClient=null;
+
+function driveConectado(){ try{ return localStorage.getItem("driveConectado")==="1"; }catch(e){ return false; } }
+function marcarConectado(v){ try{ v?localStorage.setItem("driveConectado","1"):localStorage.removeItem("driveConectado"); }catch(e){} }
+
+function atualizaBotaoDrive(){
+  const b=document.getElementById("driveBtn"), l=document.getElementById("driveLabel");
+  if(!b)return;
+  if(driveConectado()){ b.classList.add("on"); l.textContent="Sincronizar"; }
+  else { b.classList.remove("on"); l.textContent="Conectar Drive"; }
+}
+function sync(msg){ const s=document.getElementById("syncmsg"); if(s)s.textContent=msg||""; }
+
+// espera a biblioteca do Google carregar
+function esperaGIS(){
+  return new Promise((res,rej)=>{
+    let t=0;
+    const iv=setInterval(()=>{
+      if(window.google && google.accounts && google.accounts.oauth2){clearInterval(iv);res();}
+      else if((t+=100)>8000){clearInterval(iv);rej(new Error("Biblioteca do Google não carregou"));}
+    },100);
+  });
+}
+
+async function pedirToken(silencioso){
+  await esperaGIS();
+  return new Promise((res,rej)=>{
+    if(!gTokenClient){
+      gTokenClient=google.accounts.oauth2.initTokenClient({
+        client_id:GDRIVE.clientId, scope:GDRIVE.scope,
+        callback:(resp)=>{ if(resp && resp.access_token){gToken=resp.access_token;res(gToken);} else rej(new Error("sem token")); },
+        error_callback:(err)=>rej(err),
+      });
+    } else {
+      gTokenClient.callback=(resp)=>{ if(resp && resp.access_token){gToken=resp.access_token;res(gToken);} else rej(new Error("sem token")); };
+    }
+    try{ gTokenClient.requestAccessToken({prompt: silencioso?"":"consent"}); }
+    catch(e){ rej(e); }
+  });
+}
+
+async function driveGet(url){
+  const r=await fetch(url,{headers:{Authorization:"Bearer "+gToken}});
+  if(r.status===401){ gToken=null; throw new Error("token expirado"); }
+  if(!r.ok) throw new Error("Drive "+r.status);
+  return r;
+}
+
+async function acharPasta(nome){
+  const q=`name='${nome.replace(/'/g,"\\'")}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  const url="https://www.googleapis.com/drive/v3/files?q="+encodeURIComponent(q)+"&fields=files(id,name)&pageSize=10";
+  const j=await (await driveGet(url)).json();
+  return (j.files&&j.files[0])?j.files[0].id:null;
+}
+
+async function listarArquivos(pastaId){
+  const desde=new Date(Date.now()-GDRIVE.diasJanela*864e5).toISOString();
+  const q=`'${pastaId}' in parents and trashed=false and modifiedTime > '${desde}' and mimeType='application/json'`;
+  const url="https://www.googleapis.com/drive/v3/files?q="+encodeURIComponent(q)+"&fields=files(id,name,modifiedTime)&orderBy=modifiedTime&pageSize=200";
+  const j=await (await driveGet(url)).json();
+  return j.files||[];
+}
+
+async function baixarJson(id){
+  const url="https://www.googleapis.com/drive/v3/files/"+id+"?alt=media";
+  return await (await driveGet(url)).json();
+}
+
+async function sincronizarDrive(silencioso){
+  try{
+    sync("Conectando ao Drive…");
+    await pedirToken(silencioso);
+    marcarConectado(true); atualizaBotaoDrive();
+
+    let store=(await idbGet("store"))||{daily:{},workouts:[],sleep:{},rhr:{}};
+    let totNovos=0,totTreinos=0,totSono=0,arqs=0,falhas=0,pastasVazias=0;
+
+    for(const nome of GDRIVE.pastas){
+      sync("Lendo pasta "+nome+"…");
+      const pid=await acharPasta(nome);
+      if(!pid){ pastasVazias++; continue; }
+      const files=await listarArquivos(pid);
+      for(const f of files){
+        try{
+          const j=await baixarJson(f.id);
+          const r=mergeInto(store,parseExport(j));
+          store=r.store; totNovos+=r.novos; totTreinos+=r.novosTreinos; totSono+=r.novoSono; arqs++;
+        }catch(err){ console.error(f.name,err); falhas++; }
+      }
+    }
+
+    await idbSet("store",store);
+    STATE=computeAll(store); render();
+
+    const p=[];
+    if(totNovos)p.push(`${totNovos} dia(s)`);
+    if(totTreinos)p.push(`${totTreinos} treino(s)`);
+    if(totSono)p.push(`${totSono} noite(s)`);
+    let msg = arqs? (p.length?`Drive: + ${p.join(" · ")}`:"Drive: tudo atualizado") : "Nenhum arquivo novo no Drive";
+    if(pastasVazias===GDRIVE.pastas.length) msg="Pastas não encontradas no Drive";
+    if(falhas)msg+=` · ${falhas} falha(s)`;
+    sync(""); toast(msg);
+  }catch(err){
+    console.error(err); sync("");
+    const m=String(err&&err.message||err);
+    if(m.includes("popup")||m.includes("access_denied")||m.includes("interaction")) {
+      toast("Conexão cancelada");
+    } else if(m.includes("não carregou")) {
+      toast("Sem internet para o Google agora");
+    } else {
+      toast("Não consegui ler o Drive — toque em Conectar Drive");
+      marcarConectado(false); atualizaBotaoDrive();
+    }
+  }
+}
+
+document.getElementById("driveBtn").onclick=()=>sincronizarDrive(false);
+
+loadState().then(()=>{
+  atualizaBotaoDrive();
+  // se já conectou antes, tenta sincronizar em silêncio ao abrir
+  if(driveConectado()) sincronizarDrive(true);
+});
 </script>
 </body>
 </html>
