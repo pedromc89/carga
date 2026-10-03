@@ -47,6 +47,23 @@ h2{font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:500;
 .rd-bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
 .rd-bar-fill{height:100%;border-radius:3px;transition:width .5s ease}
 .rd-note{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:12px;line-height:1.5}
+.zbar{display:flex;height:16px;border-radius:5px;overflow:hidden;margin:2px 0 12px}
+.zleg{display:flex;flex-wrap:wrap;gap:12px}
+.zleg span{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.wk-row{display:flex;align-items:center;gap:10px;padding:11px 0;border-top:1px solid var(--line);cursor:pointer}
+.wk-ic{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.wk-main{flex:1;min-width:0}
+.wk-t{font-size:13px;color:var(--text)}
+.wk-sub{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.wk-r{font-family:var(--mono);font-size:10.5px;color:var(--muted);text-align:right;white-space:nowrap}
+.wk-chev{color:var(--ghost);font-size:17px;flex-shrink:0;line-height:1}
+.wd{position:fixed;inset:0;display:none;z-index:110;background:rgba(14,22,34,.93);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);overflow-y:auto;padding:max(26px,env(safe-area-inset-top)) 16px 40px}
+.wd.show{display:block}
+.wd-card{max-width:560px;margin:0 auto;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px 18px}
+.wd-close{float:right;background:var(--panelHi);border:1px solid var(--line);color:var(--text);border-radius:999px;width:34px;height:34px;font-size:18px;cursor:pointer}
+.wd-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(86px,1fr));gap:10px;margin:14px 0}
+.wd-stat .l{font-family:var(--mono);font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.wd-stat .v{font-family:'Space Grotesk',sans-serif;font-size:19px;font-weight:700}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:9px;margin-bottom:14px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 13px 11px}
 .stat .l{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
@@ -118,7 +135,7 @@ svg{display:block;width:100%;overflow:visible}
 </head>
 <body>
 <div class="wrap">
-  <div class="eyebrow">Amazfit T-Rex 3 · Apple Saúde · <span style="color:#5FA87C">v6 · filtro</span></div>
+  <div class="eyebrow">Amazfit T-Rex 3 · Apple Saúde · <span style="color:#5FA87C">v7 · zonas de FC</span></div>
   <h1>Carga<span style="color:var(--hot)">.</span></h1>
   <p class="sub" id="subtitle">Importe os arquivos do Health Auto Export (métricas + treinos). O app guarda o histórico neste iPhone e acrescenta os dias novos a cada importação.</p>
 
@@ -145,6 +162,7 @@ svg{display:block;width:100%;overflow:visible}
   <div class="ovl-msg" id="ovlMsg"></div>
   <div class="ovl-hint" id="ovlHint"></div>
 </div></div>
+<div class="wd" id="wd"><div class="wd-card" id="wdCard"></div></div>
 
 <script>
 "use strict";
@@ -179,6 +197,8 @@ const modNome = t => (MOD[t]?MOD[t].nome:(t||"Outros"));
 const modCor  = t => (MOD[t]?MOD[t].cor:C.ghost);
 const corPorNome = {};
 Object.values(MOD).forEach(m=>corPorNome[m.nome]=m.cor);
+const ZCOR=["#4C93C3","#5FA87C","#E9B949","#E2603A","#C0392B"];
+const ZLAB=["Z1 leve","Z2 aeróbico","Z3 tempo","Z4 limiar","Z5 máximo"];
 
 const num = v => Number(v).toLocaleString("pt-BR");
 const br  = s => String(s).replace(".",",");
@@ -349,8 +369,17 @@ function parseHaeWorkouts(j){
     let kcal=haeQty(w.activeEnergyBurned);
     if(kcal==null) kcal=haeQty(w.totalEnergyBurned);
     const fc=haeQty(w.avgHeartRate);
+    const maxHr=haeQty(w.maxHeartRate) ?? (w.heartRate&&haeQty(w.heartRate.max)) ?? null;
+    // curva de FC por minuto (para zonas e gráfico do treino)
+    let hr=null;
+    if(Array.isArray(w.heartRateData)&&w.heartRateData.length){
+      hr=w.heartRateData.map(p=>{const v=p.Avg!=null?p.Avg:(p.avg!=null?p.avg:null);return v!=null?Math.round(v):null;})
+        .filter(v=>v!=null&&v>0);
+      if(!hr.length)hr=null;
+    }
     return {start:s.ms, end:e.ms, type:w.name, source:"Zepp",
-      kcal:kcal!=null?Math.round(kcal):0, fc:fc!=null?Math.round(fc):null};
+      kcal:kcal!=null?Math.round(kcal):0, fc:fc!=null?Math.round(fc):null,
+      maxHr:maxHr!=null?Math.round(maxHr):null, hr};
   }).filter(Boolean);
   // dias que tiveram treino, para atualizar contagem
   const diasComTreino={};
@@ -404,7 +433,7 @@ function mergeWorkouts(list){
       (Math.min(o.end,w.end)-Math.max(o.start,w.start))>0 &&
       (Math.min(o.end,w.end)-Math.max(o.start,w.start))/Math.min(o.end-o.start,w.end-w.start)>=0.8);
     if(hit){ hit.dup=true;
-      if(w.source==="Zepp"){hit.kcal=w.kcal;hit.fc=w.fc;hit.start=w.start;hit.end=w.end;} }
+      if(w.source==="Zepp"){hit.kcal=w.kcal;hit.fc=w.fc;hit.start=w.start;hit.end=w.end;hit.hr=w.hr;hit.maxHr=w.maxHr;} }
     else out.push({...w});
   }
   return out;
@@ -646,9 +675,31 @@ function computeAll(store, periodo){
   const P2=Object.keys(vol).filter(d=>vol[d]!=null&&store.sleep[addDia(d)]).map(d=>({x:vol[d],y:store.sleep[addDia(d)].h}));
   const P3=Object.keys(vol).filter(d=>vol[d]!=null&&store.rhr[addDia(d)]!=null).map(d=>({x:vol[d],y:store.rhr[addDia(d)]}));
 
+  /* ====== zonas de FC + lista de treinos ====== */
+  // FC máxima: configurada pelo usuário, ou a maior já observada nos treinos
+  let obsMax=0;
+  merged.forEach(w=>{ if(w.maxHr)obsMax=Math.max(obsMax,w.maxHr);
+    if(w.hr)w.hr.forEach(v=>obsMax=Math.max(obsMax,v)); });
+  const hrMax = (store.config&&store.config.hrMax) ? store.config.hrMax : (obsMax||190);
+  const hrMaxAuto = !(store.config&&store.config.hrMax);
+  const zonaDe = bpm => { const p=bpm/hrMax*100;
+    return p<60?0 : p<70?1 : p<80?2 : p<90?3 : 4; };
+  // por treino (na janela): minutos por zona
+  const treinos = mergedWin.map(w=>{
+    const z=[0,0,0,0,0];
+    if(w.hr) w.hr.forEach(v=>{ z[zonaDe(v)]++; });  // cada amostra ≈ 1 min
+    return {start:w.start, type:w.type, nome:modNome(w.type),
+      min:Math.round((w.end-w.start)/6e4), kcal:w.kcal, fc:w.fc, maxHr:w.maxHr,
+      hr:w.hr||null, zonas:z, temZona:!!w.hr};
+  }).sort((a,b)=>b.start-a.start);
+  // agregado da janela
+  const zonasTot=[0,0,0,0,0];
+  treinos.forEach(t=>t.zonas.forEach((m,i)=>zonasTot[i]+=m));
+  const comZona=treinos.filter(t=>t.temZona).length;
+
   return {dias,kcalArr,cheios,merged:mergedWin,dup,totMod,totMin,modNames,weekRows,
     sono,mediaSono,sub7,sub6,drift,ultimo,P1,P2,P3,acr,readiness,
-    periodo: periodo||null,
+    periodo: periodo||null, treinos, zonasTot, comZona, hrMax, hrMaxAuto,
     totais:{kcal:Math.round(cheios.reduce((a,d)=>a+d.kcal,0)), dias:cheios.length}};
 }
 function isoLocalFromTs(ts){const d=new Date(ts);
@@ -665,6 +716,70 @@ function card(title,note,body){
   return c;
 }
 function caption(html){const p=document.createElement("p");p.className="caption";p.innerHTML=html;return p;}
+
+// curva de FC de um treino, com faixas de zona ao fundo
+function curvaFC(hr, hrMax){
+  const W=520,H=150,padL=30,padR=8,padT=8,padB=16;
+  const s=svg(W,H);
+  const lo=Math.min(...hr), hi=Math.max(...hr);
+  const ymin=Math.max(40,lo-5), ymax=hi+5;
+  const x=i=>padL+(W-padL-padR)*(hr.length<2?0:i/(hr.length-1));
+  const y=v=>H-padB-(H-padT-padB)*((v-ymin)/((ymax-ymin)||1));
+  // faixas de zona ao fundo
+  const lims=[0.6,0.7,0.8,0.9,1.3].map(p=>p*hrMax);
+  let prev=ymin;
+  for(let z=0;z<5;z++){
+    const top=Math.min(ymax,lims[z]), bot=Math.max(ymin,z===0?ymin:lims[z-1]);
+    if(top<=bot) continue;
+    s.appendChild(el("rect",{x:padL,y:y(top),width:W-padL-padR,height:Math.max(0,y(bot)-y(top)),
+      fill:ZCOR[z],"fill-opacity":0.10}));
+  }
+  // eixo y (2 marcas)
+  [ymin,Math.round((ymin+ymax)/2),ymax].forEach(v=>{
+    const t=el("text",{x:padL-5,y:y(v)+3,"text-anchor":"end",class:"axis"});t.textContent=Math.round(v);s.appendChild(t);});
+  // linha
+  const pts=hr.map((v,i)=>`${x(i)},${y(v)}`).join(" ");
+  s.appendChild(el("polyline",{points:pts,fill:"none",stroke:C.text,"stroke-width":1.8,"stroke-linejoin":"round"}));
+  return s;
+}
+
+function abrirTreino(t){
+  const wd=document.getElementById("wd"), cardEl=document.getElementById("wdCard");
+  const dt=new Date(t.start);
+  const dd=`${String(dt.getDate()).padStart(2,"0")}/${String(dt.getMonth()+1).padStart(2,"0")} · ${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`;
+  const tot=t.zonas.reduce((a,b)=>a+b,0)||1;
+  const unit=c=>`<span style="font-size:11px;color:var(--muted)">${c}</span>`;
+  let html=`<button class="wd-close" id="wdClose">×</button>
+    <h2 style="margin:0 0 2px;font-family:'Space Grotesk',sans-serif;font-size:20px">${t.nome}</h2>
+    <div style="font-family:var(--mono);font-size:11px;color:var(--muted)">${dd}</div>
+    <div class="wd-stats">
+      <div class="wd-stat"><div class="l">Duração</div><div class="v">${t.min}${unit("min")}</div></div>
+      <div class="wd-stat"><div class="l">Energia</div><div class="v">${num(t.kcal)}${unit("kcal")}</div></div>
+      ${t.fc?`<div class="wd-stat"><div class="l">FC média</div><div class="v">${t.fc}${unit("bpm")}</div></div>`:""}
+      ${t.maxHr?`<div class="wd-stat"><div class="l">FC máx</div><div class="v">${t.maxHr}${unit("bpm")}</div></div>`:""}
+    </div>`;
+  if(t.hr&&t.hr.length){
+    html+=`<div style="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-bottom:4px">Curva de FC</div><div id="wdCurve"></div>
+      <div style="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin:16px 0 8px">Tempo em zona</div><div id="wdZonas"></div>`;
+  } else {
+    html+=`<div style="font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.5">Sem curva de FC para este treino. Treinos antigos (import dos 90 dias) não têm o detalhe; os novos, vindos do Zepp, já vêm com a curva.</div>`;
+  }
+  cardEl.innerHTML=html;
+  if(t.hr&&t.hr.length){
+    document.getElementById("wdCurve").appendChild(curvaFC(t.hr, STATE?STATE.hrMax:190));
+    const zc=document.getElementById("wdZonas");
+    t.zonas.forEach((m,i)=>{
+      const row=document.createElement("div");
+      row.style.cssText="display:flex;align-items:center;gap:8px;margin-bottom:6px";
+      row.innerHTML=`<span style="font-family:var(--mono);font-size:10px;color:var(--muted);width:20px">Z${i+1}</span>
+        <div style="flex:1;height:8px;background:var(--line);border-radius:4px;overflow:hidden"><div style="height:100%;width:${Math.round(m/tot*100)}%;background:${ZCOR[i]}"></div></div>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--muted);width:58px;text-align:right">${m} min</span>`;
+      zc.appendChild(row);
+    });
+  }
+  document.getElementById("wdClose").onclick=()=>wd.classList.remove("show");
+  wd.classList.add("show");
+}
 
 function render(){
   const app=document.getElementById("app");
@@ -797,6 +912,38 @@ function render(){
     app.appendChild(mc);
   }
 
+  // zonas de FC (agregado da janela)
+  if(A.comZona){
+    const tot=A.zonasTot.reduce((a,b)=>a+b,0)||1;
+    const zc=card("Zonas de FC",`FC máx ${A.hrMax}${A.hrMaxAuto?" (auto)":""} · ${A.comZona} treino(s) com FC`,null);
+    const bar=document.createElement("div");bar.className="zbar";
+    A.zonasTot.forEach((m,i)=>{ if(m>0){const seg=document.createElement("div");
+      seg.style.cssText=`width:${m/tot*100}%;background:${ZCOR[i]}`;seg.title=`${ZLAB[i]}: ${m} min`;bar.appendChild(seg);} });
+    zc.appendChild(bar);
+    const leg=document.createElement("div");leg.className="zleg";
+    A.zonasTot.forEach((m,i)=>{const s=document.createElement("span");
+      s.innerHTML=`<span class="kdot" style="background:${ZCOR[i]}"></span>Z${i+1} · ${m}min (${Math.round(m/tot*100)}%)`;leg.appendChild(s);});
+    zc.appendChild(leg);
+    zc.appendChild(caption("Tempo somado por zona de FC no período. Z1–Z2 constroem base aeróbica; Z4–Z5 são alta intensidade. Ajuste a FC máxima no menu ···."));
+    app.appendChild(zc);
+  }
+
+  // lista de treinos
+  if(A.treinos.length){
+    const tc=card("Treinos",`${A.treinos.length} no período · toque para ver`,null);
+    A.treinos.slice(0,50).forEach(t=>{
+      const row=document.createElement("div");row.className="wk-row";
+      const dt=new Date(t.start);
+      const dd=`${String(dt.getDate()).padStart(2,"0")}/${String(dt.getMonth()+1).padStart(2,"0")}`;
+      row.innerHTML=`<span class="wk-ic" style="background:${corPorNome[t.nome]||C.ghost}"></span>
+        <div class="wk-main"><div class="wk-t">${t.nome}</div><div class="wk-sub">${dd} · ${t.min} min${t.fc?" · "+t.fc+" bpm":""}</div></div>
+        <div class="wk-r">${num(t.kcal)} kcal</div><span class="wk-chev">›</span>`;
+      row.onclick=()=>abrirTreino(t);
+      tc.appendChild(row);
+    });
+    app.appendChild(tc);
+  }
+
   // sono
   if(A.sono.length){
     const sc=card(`Sono: ${br(A.mediaSono.toFixed(2))} h por noite`,"",null);
@@ -847,7 +994,12 @@ async function loadState(){
   try{ STATE=null; render(); }catch(e){ mostrarErro(e); }
   // depois tenta carregar o histórico salvo
   try{
-    const store=await idbGet("store");
+    let store=await idbGet("store");
+    // migração única: zera o cache "seen" dos treinos para reimportar as curvas de FC
+    if(store && store.migHR!==1){
+      store.seen={}; store.migHR=1;
+      try{ await idbSet("store",store); }catch(e){}
+    }
     DADOS=store; STATE = store?computeAll(store,PERIODO):null;
     render();
     if(idbIndisponivel) avisoArmazenamento();
@@ -893,14 +1045,42 @@ document.getElementById("fileInput").onchange=async(e)=>{
   e.target.value="";
 };
 document.getElementById("menuBtn").onclick=async()=>{
-  const opt=prompt("Digite:\n  L — limpar todo o histórico\n  E — exportar backup (JSON)\n  (ou cancele)");
+  const fcAtual = (DADOS&&DADOS.config&&DADOS.config.hrMax) ? DADOS.config.hrMax
+                  : (STATE?STATE.hrMax:"auto");
+  const auto = !(DADOS&&DADOS.config&&DADOS.config.hrMax);
+  const opt=prompt(
+    "Digite:\n"+
+    "  F — definir FC máxima (atual: "+fcAtual+(auto?" · automática":"")+")\n"+
+    "  R — rebaixar treinos (reimportar curva de FC)\n"+
+    "  E — exportar backup (JSON)\n"+
+    "  L — limpar todo o histórico\n"+
+    "  (ou cancele)");
   if(!opt)return;
-  if(opt.toUpperCase()==="L"){if(confirm("Apagar TODO o histórico deste aparelho?")){
-    await idbSet("store",{daily:{},workouts:[],sleep:{},rhr:{},hrv:{}});DADOS=null;STATE=null;render();toast("Histórico apagado");}}
-  else if(opt.toUpperCase()==="E"){const store=await idbGet("store");
+  const o=opt.trim().toUpperCase();
+  if(o==="F"){
+    const v=prompt("FC máxima em bpm (deixe vazio para voltar ao automático):", auto?"":fcAtual);
+    if(v===null)return;
+    const store=await idbGet("store")||{};
+    const n=parseInt(v,10);
+    if(v.trim()===""){ if(store.config)delete store.config.hrMax; toast("FC máxima: automática"); }
+    else if(n>=120&&n<=230){ store.config=store.config||{}; store.config.hrMax=n; toast("FC máxima: "+n+" bpm"); }
+    else { toast("Valor fora de 120–230"); return; }
+    await idbSet("store",store); DADOS=store; aplicarPeriodo(PERIODO);
+  }
+  else if(o==="R"){
+    if(confirm("Reimportar as curvas de FC? Os treinos serão baixados do Drive de novo na próxima sincronização.")){
+      const store=await idbGet("store")||{};
+      store.seen={}; await idbSet("store",store); DADOS=store;
+      toast("Pronto — toque em Sincronizar");
+      if(driveConectado()) sincronizarDrive(false);
+    }
+  }
+  else if(o==="E"){const store=await idbGet("store");
     const blob=new Blob([JSON.stringify(store)],{type:"application/json"});
     const a=document.createElement("a");a.href=URL.createObjectURL(blob);
     a.download="carga-backup.json";a.click();toast("Backup gerado");}
+  else if(o==="L"){if(confirm("Apagar TODO o histórico deste aparelho?")){
+    await idbSet("store",{daily:{},workouts:[],sleep:{},rhr:{},hrv:{},seen:{},config:{}});DADOS=null;STATE=null;render();toast("Histórico apagado");}}
 };
 
 /* ========================================================
@@ -1011,6 +1191,16 @@ async function baixarJson(id){
   const url="https://www.googleapis.com/drive/v3/files/"+id+"?alt=media";
   return await (await driveGet(url)).json();
 }
+// baixa vários em paralelo (limite de concorrência)
+async function baixarVarios(files, conc=8){
+  const out=new Array(files.length); let i=0;
+  async function worker(){
+    while(i<files.length){ const idx=i++; const f=files[idx];
+      try{ out[idx]={f, j:await baixarJson(f.id)}; }catch(e){ out[idx]={f, err:e}; } }
+  }
+  await Promise.all(Array.from({length:Math.min(conc,files.length)}, worker));
+  return out;
+}
 
 async function sincronizarDrive(silencioso){
   try{
@@ -1019,7 +1209,8 @@ async function sincronizarDrive(silencioso){
     await pedirToken(silencioso);
     marcarConectado(true); atualizaBotaoDrive();
 
-    let store=(await idbGet("store"))||{daily:{},workouts:[],sleep:{},rhr:{}};
+    let store=(await idbGet("store"))||{daily:{},workouts:[],sleep:{},rhr:{},hrv:{}};
+    const seen = store.seen = store.seen || {};   // fileId -> modifiedTime já importado
     let totNovos=0,totTreinos=0,totSono=0,falhas=0;
     const diag=[]; let achouAlguma=false;
 
@@ -1029,14 +1220,20 @@ async function sincronizarDrive(silencioso){
       if(!pid){ diag.push(nome+": não achada"); continue; }
       achouAlguma=true;
       const files=await listarArquivos(pid);
-      for(const f of files){
+      // só baixa arquivos novos ou alterados (pula os já importados)
+      const pendentes=files.filter(f=>seen[f.id]!==f.modifiedTime);
+      if(!silencioso && pendentes.length) sync(`Baixando ${pendentes.length} de ${nome}…`);
+      const baixados=await baixarVarios(pendentes);
+      for(const r0 of baixados){
+        if(!r0) continue;
+        if(r0.err){ console.error(r0.f.name,r0.err); falhas++; continue; }
         try{
-          const j=await baixarJson(f.id);
-          const r=mergeInto(store,parseExport(j));
+          const r=mergeInto(store,parseExport(r0.j));
           store=r.store; totNovos+=r.novos; totTreinos+=r.novosTreinos; totSono+=r.novoSono;
-        }catch(err){ console.error(f.name,err); falhas++; }
+          seen[r0.f.id]=r0.f.modifiedTime;   // marca como importado
+        }catch(err){ console.error(r0.f.name,err); falhas++; }
       }
-      diag.push(nome+": "+files.length+" arq");
+      diag.push(nome+": "+files.length+" arq ("+pendentes.length+" novos)");
     }
 
     await idbSet("store",store);
@@ -1073,6 +1270,10 @@ async function sincronizarDrive(silencioso){
 
 document.getElementById("driveBtn").onclick=()=>sincronizarDrive(false);
 document.getElementById("ovl").onclick=()=>document.getElementById("ovl").classList.remove("show");
+// fechar detalhe de treino tocando no fundo (fora do card)
+document.getElementById("wd").addEventListener("click",ev=>{
+  if(ev.target.id==="wd") document.getElementById("wd").classList.remove("show");
+});
 
 loadState().then(()=>{
   atualizaBotaoDrive();
