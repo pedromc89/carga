@@ -2,7 +2,7 @@
    network-first para o HTML (código sempre fresco quando online),
    stale-while-revalidate para os demais assets do próprio app.
    Requisições ao Google/Drive (cross-origin) passam direto, sem cache. */
-const CACHE = "carga-v8";
+const CACHE = "carga-v9";
 
 self.addEventListener("install", e => { self.skipWaiting(); });
 

@@ -135,7 +135,7 @@ svg{display:block;width:100%;overflow:visible}
 </head>
 <body>
 <div class="wrap">
-  <div class="eyebrow">Amazfit T-Rex 3 · Apple Saúde · <span style="color:#5FA87C">v8 · auto-update</span></div>
+  <div class="eyebrow">Amazfit T-Rex 3 · Apple Saúde · <span style="color:#5FA87C">v9 · fix sync</span></div>
   <h1>Carga<span style="color:var(--hot)">.</span></h1>
   <p class="sub" id="subtitle">Importe os arquivos do Health Auto Export (métricas + treinos). O app guarda o histórico neste iPhone e acrescenta os dias novos a cada importação.</p>
 
@@ -1181,7 +1181,7 @@ async function acharPasta(nome){
 
 async function listarArquivos(pastaId){
   const desde=new Date(Date.now()-GDRIVE.diasJanela*864e5).toISOString();
-  const q=`'${pastaId}' in parents and trashed=false and modifiedTime > '${desde}' and mimeType='application/json'`;
+  const q=`'${pastaId}' in parents and trashed=false and modifiedTime > '${desde}' and mimeType contains 'json'`;
   const url="https://www.googleapis.com/drive/v3/files?q="+encodeURIComponent(q)+"&fields=files(id,name,modifiedTime)&orderBy=modifiedTime&pageSize=200";
   const j=await (await driveGet(url)).json();
   return j.files||[];
