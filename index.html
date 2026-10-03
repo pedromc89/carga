@@ -37,6 +37,16 @@ h2{font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:500;
   justify-content:space-between;margin-bottom:12px}
 .note{font-family:var(--mono);font-size:10px;color:var(--muted)}
 .caption{font-size:12.5px;color:var(--muted);line-height:1.6;margin:12px 0 0}
+.rd-wrap{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+.rd-ring{flex:0 0 auto}
+.rd-right{flex:1;min-width:210px}
+.rd-verdict{font-family:'Space Grotesk',sans-serif;font-size:18px;font-weight:700;margin-bottom:14px;letter-spacing:-.01em;line-height:1.2}
+.rd-comps{display:grid;gap:11px}
+.rd-comp-top{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:5px}
+.rd-comp-v{color:var(--text);font-family:var(--mono);font-size:11px}
+.rd-bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+.rd-bar-fill{height:100%;border-radius:3px;transition:width .5s ease}
+.rd-note{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:12px;line-height:1.5}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:9px;margin-bottom:14px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 13px 11px}
 .stat .l{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
@@ -273,10 +283,12 @@ function parseKit(j){
       efic:+(s.asleepSec/s.durationSec*100).toFixed(1),
       prof:+((stg.asleepDeep||0)/3600).toFixed(2),
       rem:+((stg.asleepREM||0)/3600).toFixed(2)};});
-  const rhr={};
+  const rhr={}, hrv={};
   (j.additional?.heart?.daily||[]).forEach(x=>{
-    if(x.values && x.values.restingHR!=null) rhr[x.date]=x.values.restingHR;});
-  return {daily, workouts, sleep, rhr};
+    if(x.values && x.values.restingHR!=null) rhr[x.date]=x.values.restingHR;
+    const v=x.values&&(x.values.hrv??x.values.heartRateVariability??x.values.hrvSDNN);
+    if(v!=null) hrv[x.date]=v;});
+  return {daily, workouts, sleep, rhr, hrv};
 }
 
 /* --- Health Auto Export: arquivo de métricas (inclui sono) --- */
@@ -293,6 +305,7 @@ function parseHaeMetrics(j){
   const ex=somaDia(M.apple_exercise_time);
   const and=somaDia(M.flights_climbed);
   const rhrRaw=ultimoDia(M.resting_heart_rate);
+  const hrvRaw=ultimoDia(M.heart_rate_variability);   // ms
 
   const daily={};
   const dias=new Set([...Object.keys(kcal),...Object.keys(passos),...Object.keys(ex),...Object.keys(and)]);
@@ -302,6 +315,7 @@ function parseHaeMetrics(j){
     passos:passos[d]!=null?Math.round(passos[d]):null,
     and:and[d]!=null?Math.round(and[d]):null, s:0};});
   const rhr={}; Object.keys(rhrRaw).forEach(d=>rhr[d]=Math.round(rhrRaw[d]));
+  const hrv={}; Object.keys(hrvRaw).forEach(d=>hrv[d]=Math.round(hrvRaw[d]*10)/10);
 
   // sono: sleep_analysis — valores já em horas (units "hr")
   const sleep={};
@@ -324,7 +338,7 @@ function parseHaeMetrics(j){
       rem:  +rem.toFixed(2)};
   });
 
-  return {daily, workouts:[], sleep, rhr};
+  return {daily, workouts:[], sleep, rhr, hrv};
 }
 
 /* --- Health Auto Export: arquivo de treinos --- */
@@ -342,7 +356,7 @@ function parseHaeWorkouts(j){
   const diasComTreino={};
   workouts.forEach(w=>{const d=isoLocal(new Date(w.start));
     diasComTreino[d]=(diasComTreino[d]||0)+1;});
-  return {daily:{}, workouts, sleep:{}, rhr:{}, diasComTreino};
+  return {daily:{}, workouts, sleep:{}, rhr:{}, hrv:{}, diasComTreino};
 }
 
 function parseExport(j){
@@ -355,7 +369,8 @@ function parseExport(j){
 
 /* ---------- merge de novos dados no acumulado ---------- */
 function mergeInto(store, incoming){
-  store = store || {daily:{}, workouts:[], sleep:{}, rhr:{}};
+  store = store || {daily:{}, workouts:[], sleep:{}, rhr:{}, hrv:{}};
+  store.hrv = store.hrv || {};
   let novos=0, atual=0, novosTreinos=0, novoSono=0;
   for(const d in incoming.daily){ if(!(d in store.daily))novos++; else atual++;
     // não sobrescreve com null: se o dia já existe, só preenche campos que vierem
@@ -365,6 +380,7 @@ function mergeInto(store, incoming){
   }
   for(const d in incoming.sleep){ if(!(d in store.sleep))novoSono++; store.sleep[d]=incoming.sleep[d]; }
   for(const d in incoming.rhr)   store.rhr[d]=incoming.rhr[d];
+  if(incoming.hrv) for(const d in incoming.hrv) store.hrv[d]=incoming.hrv[d];
   // treinos: dedupe por (start,source)
   const seen=new Set(store.workouts.map(w=>w.start+"|"+w.source));
   incoming.workouts.forEach(w=>{const k=w.start+"|"+w.source;
@@ -581,8 +597,44 @@ function computeAll(store){
     acr=+(aguda/cronica).toFixed(2);
   }
 
+  // prontidão diária — peso igual entre FC de repouso, HRV e sono
+  const hrvStore=store.hrv||{};
+  const hrvDays=Object.keys(hrvStore).sort();
+  const readiness=(()=>{
+    const todas=[...new Set([...rhrDays,...hrvDays,...sonoDays])].sort();
+    if(!todas.length) return null;
+    const hoje=todas[todas.length-1];
+    const clamp=v=>Math.max(0,Math.min(100,v));
+    const baseAnt=(obj,day,win=28)=>{
+      const ds=Object.keys(obj).filter(x=>x<day).sort().slice(-win);
+      if(!ds.length) return null;
+      return ds.reduce((a,x)=>a+obj[x],0)/ds.length;
+    };
+    const comps=[];
+    if(store.rhr[hoje]!=null){
+      const b=baseAnt(store.rhr,hoje);
+      const sc=b?clamp(50-((store.rhr[hoje]-b)/b)*500):50;
+      comps.push({k:"FC repouso",v:store.rhr[hoje]+" bpm",score:sc,
+        bom:b?store.rhr[hoje]<=b:true});
+    }
+    if(hrvStore[hoje]!=null){
+      const b=baseAnt(hrvStore,hoje);
+      const sc=b?clamp(50+((hrvStore[hoje]-b)/b)*250):50;
+      comps.push({k:"HRV",v:hrvStore[hoje]+" ms",score:sc,
+        bom:b?hrvStore[hoje]>=b:true});
+    }
+    if(store.sleep[hoje]){
+      const h=store.sleep[hoje].h;
+      comps.push({k:"Sono",v:h.toFixed(1)+" h",score:clamp((h-3)/5*100),bom:h>=7});
+    }
+    if(!comps.length) return null;
+    const score=Math.round(comps.reduce((a,c)=>a+c.score,0)/comps.length);
+    const faixa = score>=70?"pronto" : score>=45?"moderado" : "recuperar";
+    return {hoje, score, comps, faixa, parcial:comps.length<3};
+  })();
+
   return {dias,kcalArr,cheios,merged,dup,totMod,totMin,modNames,weekRows,
-    sono,mediaSono,sub7,sub6,drift,ultimo,P1,P2,P3,acr,
+    sono,mediaSono,sub7,sub6,drift,ultimo,P1,P2,P3,acr,readiness,
     totais:{kcal:Math.round(cheios.reduce((a,d)=>a+d.kcal,0)),
       dias:cheios.length}};
 }
@@ -617,6 +669,41 @@ function render(){
     ab.innerHTML=`<div class="alerta"><span class="tag">sinal aberto</span><span>
       Sua FC de repouso está <b>+${br(A.ultimo.desvio)}% acima da linha de base</b> na média de 7 dias.
       É o padrão de fadiga acumulada — considere uma semana mais leve.</span></div>`;
+  }
+
+  // prontidão diária
+  if(A.readiness){
+    const R=A.readiness;
+    const cor = R.faixa==="pronto"?C.verde : R.faixa==="moderado"?C.mid : C.hot;
+    const verdict = R.faixa==="pronto"?"Pronto para treino forte"
+                  : R.faixa==="moderado"?"Dia moderado — treino normal"
+                  : "Priorize recuperação";
+    const circ=2*Math.PI*52, dash=(R.score/100)*circ;
+    const compsHtml=R.comps.map(c=>{
+      const cc=c.score>=70?C.verde:c.score>=45?C.mid:C.hot;
+      return `<div><div class="rd-comp-top"><span>${c.k}</span><span class="rd-comp-v">${c.v}</span></div>
+        <div class="rd-bar"><div class="rd-bar-fill" style="width:${Math.round(c.score)}%;background:${cc}"></div></div></div>`;
+    }).join("");
+    const rc=card("Prontidão de hoje", R.hoje.slice(8)+"/"+R.hoje.slice(5,7), null);
+    const body=document.createElement("div"); body.className="rd-wrap";
+    body.innerHTML=
+      `<div class="rd-ring"><svg viewBox="0 0 120 120" width="118" height="118" style="display:block">
+        <circle cx="60" cy="60" r="52" fill="none" stroke="${C.line}" stroke-width="10"/>
+        <circle cx="60" cy="60" r="52" fill="none" stroke="${cor}" stroke-width="10" stroke-linecap="round"
+          stroke-dasharray="${dash.toFixed(1)} ${(circ-dash).toFixed(1)}" transform="rotate(-90 60 60)"/>
+        <text x="60" y="58" text-anchor="middle" font-family="Space Grotesk,sans-serif" font-size="30" font-weight="700" fill="${C.text}">${R.score}</text>
+        <text x="60" y="77" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="9" fill="${C.muted}">de 100</text>
+      </svg></div>
+      <div class="rd-right">
+        <div class="rd-verdict" style="color:${cor}">${verdict}</div>
+        <div class="rd-comps">${compsHtml}</div>
+        ${R.parcial?`<div class="rd-note">parcial — faltam sinais de hoje: ${["FC repouso","HRV","Sono"].filter(n=>!R.comps.find(x=>x.k===n)).join(", ")}</div>`:""}
+      </div>`;
+    rc.appendChild(body);
+    const cap=document.createElement("p");cap.className="caption";
+    cap.textContent="Combina FC de repouso, HRV e sono da noite (peso igual), cada um comparado à sua média recente. Verde = pronto · amarelo = moderado · vermelho = recuperar.";
+    rc.appendChild(cap);
+    app.appendChild(rc);
   }
 
   // pulso
