@@ -135,7 +135,7 @@ svg{display:block;width:100%;overflow:visible}
 </head>
 <body>
 <div class="wrap">
-  <div class="eyebrow">Amazfit T-Rex 3 · Apple Saúde · <span style="color:#5FA87C">v7 · zonas de FC</span></div>
+  <div class="eyebrow">Amazfit T-Rex 3 · Apple Saúde · <span style="color:#5FA87C">v8 · auto-update</span></div>
   <h1>Carga<span style="color:var(--hot)">.</span></h1>
   <p class="sub" id="subtitle">Importe os arquivos do Health Auto Export (métricas + treinos). O app guarda o histórico neste iPhone e acrescenta os dias novos a cada importação.</p>
 
@@ -1092,7 +1092,7 @@ const GDRIVE = {
   clientId: "957013478220-h5f1d5u1lu32kp72qetfn0lbe5eobrsp.apps.googleusercontent.com",
   scope: "https://www.googleapis.com/auth/drive.readonly",
   pastas: ["Zepp diário", "Treinos"],
-  diasJanela: 30,
+  diasJanela: 400,
 };
 let gToken=null, gTokenClient=null;
 
@@ -1274,6 +1274,58 @@ document.getElementById("ovl").onclick=()=>document.getElementById("ovl").classL
 document.getElementById("wd").addEventListener("click",ev=>{
   if(ev.target.id==="wd") document.getElementById("wd").classList.remove("show");
 });
+
+/* ========================================================
+   SERVICE WORKER — auto-atualização do código
+   Estratégia network-first: a cada abertura (online) o app
+   busca a versão nova; quando há atualização, recarrega 1x.
+======================================================== */
+if("serviceWorker" in navigator){
+  const tinhaControle = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register("sw.js").catch(()=>{});
+  let recarregou=false;
+  navigator.serviceWorker.addEventListener("controllerchange",()=>{
+    if(!tinhaControle) return;        // primeira instalação: não recarrega
+    if(recarregou) return; recarregou=true;
+    try{ toast("Atualizado — recarregando"); }catch(e){}
+    setTimeout(()=>location.reload(), 300);
+  });
+}
+
+/* ========================================================
+   PUXE-PARA-ATUALIZAR — arrastar pra baixo no topo sincroniza
+======================================================== */
+(function(){
+  let y0=0, puxando=false, disparou=false;
+  const LIMITE=85;
+  const pill=document.createElement("div");
+  pill.style.cssText="position:fixed;top:0;left:50%;transform:translate(-50%,-48px);"+
+    "background:var(--panel);border:1px solid var(--line);color:var(--muted);"+
+    "font-family:var(--mono);font-size:11px;padding:7px 14px;border-radius:0 0 12px 12px;"+
+    "z-index:60;transition:transform .15s;pointer-events:none";
+  pill.textContent="↓ puxe para atualizar";
+  document.body.appendChild(pill);
+  addEventListener("touchstart",e=>{
+    if(window.scrollY<=0 && !document.getElementById("wd").classList.contains("show")){
+      y0=e.touches[0].clientY; puxando=true; disparou=false;
+    }
+  },{passive:true});
+  addEventListener("touchmove",e=>{
+    if(!puxando)return;
+    const dy=e.touches[0].clientY-y0;
+    if(dy>0 && window.scrollY<=0){
+      const d=Math.min(dy,120);
+      pill.style.transform=`translate(-50%,${Math.min(d-48,16)}px)`;
+      pill.textContent = d>LIMITE ? "↑ solte para atualizar" : "↓ puxe para atualizar";
+      if(d>8) disparou = d>LIMITE;
+    }
+  },{passive:true});
+  addEventListener("touchend",()=>{
+    if(!puxando)return; puxando=false;
+    pill.style.transform="translate(-50%,-48px)";
+    if(disparou){ disparou=false; if(driveConectado()) sincronizarDrive(false); else toast("Conecte o Drive primeiro"); }
+  });
+})();
 
 loadState().then(()=>{
   atualizaBotaoDrive();
