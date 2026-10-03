@@ -537,23 +537,87 @@ function chartDrift(rows){
 }
 
 /* ===================== render ===================== */
-let STATE=null, METRICA="kcal";
+let STATE=null, METRICA="kcal", DADOS=null, PERIODO=7;
+const PERIODOS=[[7,"Semana"],[30,"Mês"],[90,"90 dias"],[null,"Tudo"]];
+function aplicarPeriodo(p){ PERIODO=p; STATE=DADOS?computeAll(DADOS,PERIODO):null; render(); }
 
-function computeAll(store){
+function computeAll(store, periodo){
   const days=Object.keys(store.daily).sort();
   if(!days.length)return null;
-  const dias=days.map(d=>({...store.daily[d], dow:dowOf(d), label:fmtDia(d)}));
-  const kcalArr=dias.map(d=>d.kcal);
-  const cheios=dias.filter(d=>d.kcal!=null);
+  const diasAll=days.map(d=>({...store.daily[d], dow:dowOf(d), label:fmtDia(d)}));
+  const cheiosAll=diasAll.filter(d=>d.kcal!=null);
   const merged=mergeWorkouts(store.workouts);
-  const dup=merged.filter(m=>m.dup).length;
+  const sonoDaysAll=Object.keys(store.sleep).sort();
+  const hrvStore=store.hrv||{};
+  const hrvDays=Object.keys(hrvStore).sort();
 
-  // modalidade total + por semana (blocos de 7 a partir do 1º dia completo)
-  const first = cheios.length?cheios[0].d:days[0];
+  // FC repouso — deriva (base de 28 dias sobre histórico completo)
+  const rhrDays=Object.keys(store.rhr).sort();
+  const rhrVals=rhrDays.map(d=>store.rhr[d]);
+  const driftAll=rhrDays.map((d,i)=>{
+    const m7=rolling(rhrVals,7,i), base=rolling(rhrVals,28,i);
+    return {iso:d, d:fmtDia(d), bpm:store.rhr[d], m7:+m7.toFixed(1), base:+base.toFixed(1),
+      desvio:+(((m7-base)/base)*100).toFixed(1)};});
+  const ultimo=driftAll.length?driftAll[driftAll.length-1]:null;
+
+  // razão aguda:crônica (sobre histórico completo)
+  let acr=null;
+  if(cheiosAll.length>=14){
+    const kc=cheiosAll.map(d=>d.kcal);
+    const aguda=kc.slice(-7).reduce((a,b)=>a+b,0)/7;
+    const cronica=kc.slice(-28).reduce((a,b)=>a+b,0)/Math.min(28,kc.length);
+    acr=+(aguda/cronica).toFixed(2);
+  }
+
+  // prontidão diária — base sobre histórico completo, sempre o dia mais recente
+  const readiness=(()=>{
+    const todas=[...new Set([...rhrDays,...hrvDays,...sonoDaysAll])].sort();
+    if(!todas.length) return null;
+    const hoje=todas[todas.length-1];
+    const clamp=v=>Math.max(0,Math.min(100,v));
+    const baseAnt=(obj,day,win=28)=>{
+      const ds=Object.keys(obj).filter(x=>x<day).sort().slice(-win);
+      if(!ds.length) return null;
+      return ds.reduce((a,x)=>a+obj[x],0)/ds.length;
+    };
+    const comps=[];
+    if(store.rhr[hoje]!=null){
+      const b=baseAnt(store.rhr,hoje);
+      comps.push({k:"FC repouso",v:store.rhr[hoje]+" bpm",
+        score:b?clamp(50-((store.rhr[hoje]-b)/b)*500):50,bom:b?store.rhr[hoje]<=b:true});
+    }
+    if(hrvStore[hoje]!=null){
+      const b=baseAnt(hrvStore,hoje);
+      comps.push({k:"HRV",v:hrvStore[hoje]+" ms",
+        score:b?clamp(50+((hrvStore[hoje]-b)/b)*250):50,bom:b?hrvStore[hoje]>=b:true});
+    }
+    if(store.sleep[hoje]){
+      const h=store.sleep[hoje].h;
+      comps.push({k:"Sono",v:h.toFixed(1)+" h",score:clamp((h-3)/5*100),bom:h>=7});
+    }
+    if(!comps.length) return null;
+    const score=Math.round(comps.reduce((a,c)=>a+c.score,0)/comps.length);
+    const faixa = score>=70?"pronto" : score>=45?"moderado" : "recuperar";
+    return {hoje, score, comps, faixa, parcial:comps.length<3};
+  })();
+
+  /* ====== janela de período (só afeta exibição/totais) ====== */
+  const todasDatas=[...days,...sonoDaysAll,...rhrDays,...hrvDays].sort();
+  const latest=todasDatas[todasDatas.length-1];
+  const cutoff = periodo ? addDia(latest, -(periodo-1)) : days[0];
+
+  const dias=diasAll.filter(d=>d.d>=cutoff);
+  const cheios=dias.filter(d=>d.kcal!=null);
+  const kcalArr=dias.map(d=>d.kcal);
+  const mergedWin=merged.filter(m=>isoLocalFromTs(m.start)>=cutoff);
+  const dup=mergedWin.filter(m=>m.dup).length;
+
+  // modalidade (sobre a janela)
+  const first = mergedWin.length? isoLocalFromTs(mergedWin[0].start) : cutoff;
   const weekIdx = d => Math.floor((Date.UTC(...d.split("-").map((v,i)=>i===1?v-1:+v)) -
       Date.UTC(...first.split("-").map((v,i)=>i===1?v-1:+v)))/(7*864e5));
   const totMod={}; const weeks={};
-  merged.forEach(m=>{
+  mergedWin.forEach(m=>{
     const d=isoLocalFromTs(m.start);
     const nome=modNome(m.type), min=(m.end-m.start)/6e4;
     totMod[nome]=totMod[nome]||{n:0,min:0,kcal:0};
@@ -567,76 +631,25 @@ function computeAll(store){
     const row={label:`${fmtDia(start)}\n${fmtDia(addDia(start,6))}`};
     modNames.forEach(n=>row[n]=weeks[wi][n]||0);return row;});
 
-  // sono
-  const sonoDays=Object.keys(store.sleep).sort();
+  // sono (janela)
+  const sonoDays=sonoDaysAll.filter(d=>d>=cutoff);
   const sono=sonoDays.map(d=>store.sleep[d]);
   const mediaSono=sono.length?sono.reduce((a,s)=>a+s.h,0)/sono.length:0;
   const sub7=sono.filter(s=>s.h<7).length, sub6=sono.filter(s=>s.h<6).length;
 
-  // FC repouso
-  const rhrDays=Object.keys(store.rhr).sort();
-  const rhrVals=rhrDays.map(d=>store.rhr[d]);
-  const drift=rhrDays.map((d,i)=>{
-    const m7=rolling(rhrVals,7,i), base=rolling(rhrVals,28,i);
-    return {d:fmtDia(d), bpm:store.rhr[d], m7:+m7.toFixed(1), base:+base.toFixed(1),
-      desvio:+(((m7-base)/base)*100).toFixed(1)};});
-  const ultimo=drift.length?drift[drift.length-1]:null;
+  // deriva de FC (pontos da janela; base já veio do histórico completo)
+  const drift=driftAll.filter(x=>x.iso>=cutoff);
 
-  // correlações
+  // correlações (janela)
   const vol={}; dias.forEach(d=>vol[d.d]=d.ex);
   const P1=sonoDays.filter(d=>vol[d]!=null).map(d=>({x:store.sleep[d].h,y:vol[d]}));
-  const P2=days.filter(d=>vol[d]!=null&&store.sleep[addDia(d)]).map(d=>({x:vol[d],y:store.sleep[addDia(d)].h}));
-  const P3=days.filter(d=>vol[d]!=null&&store.rhr[addDia(d)]!=null).map(d=>({x:vol[d],y:store.rhr[addDia(d)]}));
+  const P2=Object.keys(vol).filter(d=>vol[d]!=null&&store.sleep[addDia(d)]).map(d=>({x:vol[d],y:store.sleep[addDia(d)].h}));
+  const P3=Object.keys(vol).filter(d=>vol[d]!=null&&store.rhr[addDia(d)]!=null).map(d=>({x:vol[d],y:store.rhr[addDia(d)]}));
 
-  // razão aguda:crônica (energia)
-  let acr=null;
-  if(cheios.length>=14){
-    const kc=cheios.map(d=>d.kcal);
-    const aguda=kc.slice(-7).reduce((a,b)=>a+b,0)/7;
-    const cronica=kc.slice(-28).reduce((a,b)=>a+b,0)/Math.min(28,kc.length);
-    acr=+(aguda/cronica).toFixed(2);
-  }
-
-  // prontidão diária — peso igual entre FC de repouso, HRV e sono
-  const hrvStore=store.hrv||{};
-  const hrvDays=Object.keys(hrvStore).sort();
-  const readiness=(()=>{
-    const todas=[...new Set([...rhrDays,...hrvDays,...sonoDays])].sort();
-    if(!todas.length) return null;
-    const hoje=todas[todas.length-1];
-    const clamp=v=>Math.max(0,Math.min(100,v));
-    const baseAnt=(obj,day,win=28)=>{
-      const ds=Object.keys(obj).filter(x=>x<day).sort().slice(-win);
-      if(!ds.length) return null;
-      return ds.reduce((a,x)=>a+obj[x],0)/ds.length;
-    };
-    const comps=[];
-    if(store.rhr[hoje]!=null){
-      const b=baseAnt(store.rhr,hoje);
-      const sc=b?clamp(50-((store.rhr[hoje]-b)/b)*500):50;
-      comps.push({k:"FC repouso",v:store.rhr[hoje]+" bpm",score:sc,
-        bom:b?store.rhr[hoje]<=b:true});
-    }
-    if(hrvStore[hoje]!=null){
-      const b=baseAnt(hrvStore,hoje);
-      const sc=b?clamp(50+((hrvStore[hoje]-b)/b)*250):50;
-      comps.push({k:"HRV",v:hrvStore[hoje]+" ms",score:sc,
-        bom:b?hrvStore[hoje]>=b:true});
-    }
-    if(store.sleep[hoje]){
-      const h=store.sleep[hoje].h;
-      comps.push({k:"Sono",v:h.toFixed(1)+" h",score:clamp((h-3)/5*100),bom:h>=7});
-    }
-    if(!comps.length) return null;
-    const score=Math.round(comps.reduce((a,c)=>a+c.score,0)/comps.length);
-    const faixa = score>=70?"pronto" : score>=45?"moderado" : "recuperar";
-    return {hoje, score, comps, faixa, parcial:comps.length<3};
-  })();
-
-  return {dias,kcalArr,cheios,merged,dup,totMod,totMin,modNames,weekRows,
+  return {dias,kcalArr,cheios,merged:mergedWin,dup,totMod,totMin,modNames,weekRows,
     sono,mediaSono,sub7,sub6,drift,ultimo,P1,P2,P3,acr,readiness,
-    totais:{kcal:Math.round(cheios.reduce((a,d)=>a+d.kcal,0)),
-      dias:cheios.length}};
+    periodo: periodo||null,
+    totais:{kcal:Math.round(cheios.reduce((a,d)=>a+d.kcal,0)), dias:cheios.length}};
 }
 function isoLocalFromTs(ts){const d=new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}
@@ -660,8 +673,21 @@ function render(){
   if(!A){empty.classList.remove("hidden");app.innerHTML="";document.getElementById("alertaBox").innerHTML="";return;}
   empty.classList.add("hidden");
   app.innerHTML="";
+
+  // filtro de período
+  const pf=document.createElement("div");
+  pf.style.cssText="max-width:900px;margin:0 auto 14px;display:flex;gap:6px;flex-wrap:wrap";
+  PERIODOS.forEach(([val,lab])=>{
+    const b=document.createElement("button");
+    b.className="tab"+(PERIODO===val?" on":"");
+    b.textContent=lab; b.onclick=()=>aplicarPeriodo(val);
+    pf.appendChild(b);
+  });
+  app.appendChild(pf);
+
+  const plab=(PERIODOS.find(p=>p[0]===PERIODO)||[null,"Tudo"])[1];
   document.getElementById("subtitle").innerHTML=
-    `${A.cheios.length} dias · ${A.merged.length} treinos · ${A.sono.length} noites · ${A.drift.length} dias de FC. Histórico neste iPhone.`;
+    `${plab} · ${A.cheios.length} dias · ${A.merged.length} treinos · ${A.sono.length} noites. Histórico neste iPhone.`;
 
   // alerta
   const ab=document.getElementById("alertaBox");ab.innerHTML="";
@@ -708,7 +734,7 @@ function render(){
 
   // pulso
   const rib=document.createElement("div");rib.className="ribbon";
-  const maxK=Math.max(...A.cheios.map(d=>d.kcal));
+  const maxK=A.cheios.length?Math.max(...A.cheios.map(d=>d.kcal)):1;
   A.dias.forEach(d=>{const col=document.createElement("div");col.className="rcol";
     col.title=`${d.label} · ${d.kcal!=null?num(d.kcal)+" kcal":"sem dados"}`;
     const tr=document.createElement("div");tr.className="rtrack";
@@ -818,7 +844,7 @@ async function loadState(){
   // depois tenta carregar o histórico salvo
   try{
     const store=await idbGet("store");
-    STATE = store?computeAll(store):null;
+    DADOS=store; STATE = store?computeAll(store,PERIODO):null;
     render();
     if(idbIndisponivel) avisoArmazenamento();
   }catch(e){ console.error(e); mostrarErro(e); }
@@ -852,7 +878,7 @@ document.getElementById("fileInput").onchange=async(e)=>{
     }catch(err){console.error(f.name,err);falhas++;}
   }
   await idbSet("store",store);
-  STATE=computeAll(store); render();
+  DADOS=store; STATE=computeAll(store,PERIODO); render();
   const partes=[];
   if(totNovos)partes.push(`${totNovos} dia(s)`);
   if(totTreinos)partes.push(`${totTreinos} treino(s)`);
@@ -866,7 +892,7 @@ document.getElementById("menuBtn").onclick=async()=>{
   const opt=prompt("Digite:\n  L — limpar todo o histórico\n  E — exportar backup (JSON)\n  (ou cancele)");
   if(!opt)return;
   if(opt.toUpperCase()==="L"){if(confirm("Apagar TODO o histórico deste aparelho?")){
-    await idbSet("store",{daily:{},workouts:[],sleep:{},rhr:{}});STATE=null;render();toast("Histórico apagado");}}
+    await idbSet("store",{daily:{},workouts:[],sleep:{},rhr:{},hrv:{}});DADOS=null;STATE=null;render();toast("Histórico apagado");}}
   else if(opt.toUpperCase()==="E"){const store=await idbGet("store");
     const blob=new Blob([JSON.stringify(store)],{type:"application/json"});
     const a=document.createElement("a");a.href=URL.createObjectURL(blob);
@@ -1010,7 +1036,7 @@ async function sincronizarDrive(silencioso){
     }
 
     await idbSet("store",store);
-    STATE=computeAll(store); render();
+    DADOS=store; STATE=computeAll(store,PERIODO); render();
 
     const novidade = totNovos||totTreinos||totSono;
     if(!achouAlguma){
