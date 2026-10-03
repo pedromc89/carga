@@ -91,6 +91,18 @@ svg{display:block;width:100%;overflow:visible}
 .drive-dot{width:8px;height:8px;border-radius:50%;background:var(--cool);flex-shrink:0}
 .btn.drive.on .drive-dot{background:var(--verde)}
 .syncmsg{position:fixed;left:0;right:0;bottom:calc(90px + env(safe-area-inset-bottom));text-align:center;font-family:var(--mono);font-size:11px;color:var(--cool);pointer-events:none;z-index:40}
+.ovl{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+  background:rgba(14,22,34,.74);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px);z-index:100;padding:28px}
+.ovl.show{display:flex}
+.ovl-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+  padding:28px 26px;max-width:360px;width:100%;text-align:center;box-shadow:0 24px 70px rgba(0,0,0,.55)}
+.ovl-dot{width:40px;height:40px;border-radius:50%;margin:0 auto 18px;
+  border:3px solid var(--line);border-top-color:var(--cool);animation:ovlspin .9s linear infinite}
+@keyframes ovlspin{to{transform:rotate(360deg)}}
+.ovl-badge{width:46px;height:46px;border-radius:50%;margin:0 auto 16px;display:flex;align-items:center;
+  justify-content:center;font-size:24px;font-weight:700;font-family:'Space Grotesk',sans-serif}
+.ovl-msg{font-size:14.5px;line-height:1.55;color:var(--text);white-space:pre-line}
+.ovl-hint{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:14px}
 </style>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
@@ -118,6 +130,11 @@ svg{display:block;width:100%;overflow:visible}
 <input type="file" id="fileInput" accept=".json,application/json" multiple class="hidden">
 <div class="toast" id="toast"></div>
 <div class="syncmsg" id="syncmsg"></div>
+<div class="ovl" id="ovl"><div class="ovl-card">
+  <div id="ovlVisual"></div>
+  <div class="ovl-msg" id="ovlMsg"></div>
+  <div class="ovl-hint" id="ovlHint"></div>
+</div></div>
 
 <script>
 "use strict";
@@ -791,7 +808,26 @@ function atualizaBotaoDrive(){
   if(driveConectado()){ b.classList.add("on"); l.textContent="Sincronizar"; }
   else { b.classList.remove("on"); l.textContent="Conectar Drive"; }
 }
-function sync(msg){ const s=document.getElementById("syncmsg"); if(s)s.textContent=msg||""; }
+// pop-up central de sincronização
+function sync(msg){
+  const o=document.getElementById("ovl"); if(!o)return;
+  if(!msg){ o.classList.remove("show"); return; }
+  document.getElementById("ovlVisual").innerHTML='<div class="ovl-dot"></div>';
+  document.getElementById("ovlMsg").textContent=msg;
+  document.getElementById("ovlHint").textContent="";
+  o.classList.add("show");
+}
+function syncDone(msg, ok){
+  const o=document.getElementById("ovl"); if(!o)return;
+  const cor=ok?"var(--verde)":"var(--hot)";
+  document.getElementById("ovlVisual").innerHTML=
+    '<div class="ovl-badge" style="border:2px solid '+cor+';color:'+cor+'">'+(ok?"✓":"!")+'</div>';
+  document.getElementById("ovlMsg").textContent=msg;
+  document.getElementById("ovlHint").textContent="toque para fechar";
+  o.classList.add("show");
+  clearTimeout(o._t);
+  if(ok) o._t=setTimeout(()=>o.classList.remove("show"), 4000);
+}
 
 // espera a biblioteca do Google carregar
 function esperaGIS(){
@@ -861,7 +897,7 @@ async function baixarJson(id){
 
 async function sincronizarDrive(silencioso){
   try{
-    sync("Conectando ao Drive…");
+    if(!silencioso) sync("Conectando ao Drive…");
     _pastasCache=null; // renova a lista de pastas a cada sincronização
     await pedirToken(silencioso);
     marcarConectado(true); atualizaBotaoDrive();
@@ -871,17 +907,16 @@ async function sincronizarDrive(silencioso){
     const diag=[]; let achouAlguma=false;
 
     for(const nome of GDRIVE.pastas){
-      sync("Lendo pasta "+nome+"…");
+      if(!silencioso) sync("Lendo pasta "+nome+"…");
       const pid=await acharPasta(nome);
       if(!pid){ diag.push(nome+": não achada"); continue; }
       achouAlguma=true;
       const files=await listarArquivos(pid);
-      let lidos=0;
       for(const f of files){
         try{
           const j=await baixarJson(f.id);
           const r=mergeInto(store,parseExport(j));
-          store=r.store; totNovos+=r.novos; totTreinos+=r.novosTreinos; totSono+=r.novoSono; lidos++;
+          store=r.store; totNovos+=r.novos; totTreinos+=r.novosTreinos; totSono+=r.novoSono;
         }catch(err){ console.error(f.name,err); falhas++; }
       }
       diag.push(nome+": "+files.length+" arq");
@@ -890,35 +925,37 @@ async function sincronizarDrive(silencioso){
     await idbSet("store",store);
     STATE=computeAll(store); render();
 
+    const novidade = totNovos||totTreinos||totSono;
     if(!achouAlguma){
-      // nenhuma pasta bateu — mostra as pastas que EXISTEM no Drive, para acharmos o nome certo
       const nomes=(await todasPastas()).map(f=>f.name).slice(0,15).join(", ");
-      sync("Pastas não achadas. No Drive existem: "+(nomes||"nenhuma"));
-      toast("Pastas não achadas — veja a lista embaixo");
+      if(silencioso) toast("Pastas do Drive não encontradas");
+      else syncDone("Pastas não encontradas no Drive.\nExistem: "+(nomes||"nenhuma"), false);
     } else {
       const p=[];
       if(totNovos)p.push(`+${totNovos} dia(s)`);
       if(totTreinos)p.push(`+${totTreinos} treino(s)`);
       if(totSono)p.push(`+${totSono} noite(s)`);
-      let msg = (p.length? p.join(" · ") : "sem novidades") + "  ·  " + diag.join(" · ");
-      if(falhas)msg+=` · ${falhas} falha(s)`;
-      sync(msg); toast("Sincronizado");
+      const resumo = (p.length? p.join(" · ") : "Tudo atualizado");
+      const detalhe = diag.join(" · ") + (falhas?` · ${falhas} falha(s)`:"");
+      if(silencioso){ if(novidade) toast(resumo); }          // automático: discreto
+      else syncDone(resumo+"\n"+detalhe, true);              // manual: pop-up central
     }
   }catch(err){
     console.error(err); sync("");
     const m=String(err&&err.message||err);
-    if(m.includes("popup")||m.includes("access_denied")||m.includes("interaction")) {
-      toast("Conexão cancelada");
-    } else if(m.includes("não carregou")) {
-      toast("Sem internet para o Google agora");
+    if(m.includes("popup")||m.includes("access_denied")||m.includes("interaction")){
+      if(!silencioso) toast("Conexão cancelada");
+    } else if(m.includes("não carregou")){
+      if(!silencioso) toast("Sem internet para o Google agora");
     } else {
-      toast("Não consegui ler o Drive — toque em Conectar Drive");
       marcarConectado(false); atualizaBotaoDrive();
+      if(!silencioso) syncDone("Não consegui ler o Drive.\nToque em Conectar Drive de novo.", false);
     }
   }
 }
 
 document.getElementById("driveBtn").onclick=()=>sincronizarDrive(false);
+document.getElementById("ovl").onclick=()=>document.getElementById("ovl").classList.remove("show");
 
 loadState().then(()=>{
   atualizaBotaoDrive();
