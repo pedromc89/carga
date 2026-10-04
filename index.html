@@ -135,7 +135,7 @@ svg{display:block;width:100%;overflow:visible}
 </head>
 <body>
 <div class="wrap">
-  <div class="eyebrow">Amazfit T-Rex 3 · Apple Saúde · <span style="color:#5FA87C">v9 · fix sync</span></div>
+  <div class="eyebrow">Amazfit T-Rex 3 · Apple Saúde · <span style="color:#5FA87C">v10 · prontidão</span></div>
   <h1>Carga<span style="color:var(--hot)">.</span></h1>
   <p class="sub" id="subtitle">Importe os arquivos do Health Auto Export (métricas + treinos). O app guarda o histórico neste iPhone e acrescenta os dias novos a cada importação.</p>
 
@@ -565,6 +565,26 @@ function chartDrift(rows){
   return s;
 }
 
+// linha de prontidão ao longo do tempo, com faixas de zona ao fundo
+function chartReadiness(serie){
+  const W=680,H=180,padL=26,padR=8,padT=10,padB=20;
+  const s=svg(W,H); const n=serie.length;
+  const x=i=>padL+(W-padL-padR)*(n<=1?0.5:i/(n-1));
+  const y=v=>padT+(H-padT-padB)*(1-v/100);
+  const band=(lo,hi,col)=>s.appendChild(el("rect",{x:padL,y:y(hi),width:W-padL-padR,height:y(lo)-y(hi),fill:col,opacity:.08}));
+  band(70,100,C.verde); band(45,70,C.mid); band(0,45,C.hot);
+  [45,70].forEach(g=>s.appendChild(el("line",{x1:padL,x2:W-padR,y1:y(g),y2:y(g),stroke:C.line,"stroke-width":.7,"stroke-dasharray":"3 3"})));
+  [0,50,100].forEach(g=>{const t=el("text",{x:padL-5,y:y(g)+3,"text-anchor":"end",class:"axis"});t.textContent=g;s.appendChild(t);});
+  const pts=serie.map((p,i)=>`${x(i).toFixed(1)},${y(p.score).toFixed(1)}`).join(" ");
+  s.appendChild(el("polyline",{points:pts,fill:"none",stroke:C.text,"stroke-width":2,"stroke-linejoin":"round"}));
+  serie.forEach((p,i)=>{const col=p.faixa==="pronto"?C.verde:p.faixa==="moderado"?C.mid:C.hot;
+    s.appendChild(el("circle",{cx:x(i),cy:y(p.score),r:n>60?1.6:2.6,fill:col}));});
+  const step=Math.max(1,Math.ceil(n/8));
+  serie.forEach((p,i)=>{if(i%step===0||i===n-1){
+    const t=el("text",{x:x(i),y:H-5,"text-anchor":"middle",class:"axis"});t.textContent=p.d;s.appendChild(t);}});
+  return s;
+}
+
 /* ===================== render ===================== */
 let STATE=null, METRICA="kcal", DADOS=null, PERIODO=7;
 const PERIODOS=[[7,"Semana"],[30,"Mês"],[90,"3 meses"],[180,"6 meses"],[365,"1 ano"],[null,"Tudo"]];
@@ -598,37 +618,48 @@ function computeAll(store, periodo){
     acr=+(aguda/cronica).toFixed(2);
   }
 
-  // prontidão diária — base sobre histórico completo, sempre o dia mais recente
-  const readiness=(()=>{
-    const todas=[...new Set([...rhrDays,...hrvDays,...sonoDaysAll])].sort();
-    if(!todas.length) return null;
-    const hoje=todas[todas.length-1];
+  // ===== prontidão — série diária por z-score contra a linha de base pessoal =====
+  // Cada sinal é medido em desvios-padrão da média dos últimos ~60 dias:
+  // variação normal fica em 40–60; só um desvio real leva a nota a ~20 ou ~85.
+  const readinessSerie=(()=>{
     const clamp=v=>Math.max(0,Math.min(100,v));
-    const baseAnt=(obj,day,win=28)=>{
+    // média + desvio-padrão dos dias ANTERIORES (janela 60, mínimo 7)
+    const statPrior=(obj,day,win=60,min=7)=>{
       const ds=Object.keys(obj).filter(x=>x<day).sort().slice(-win);
-      if(!ds.length) return null;
-      return ds.reduce((a,x)=>a+obj[x],0)/ds.length;
+      if(ds.length<min) return null;
+      const vs=ds.map(x=>obj[x]);
+      const m=vs.reduce((a,b)=>a+b,0)/vs.length;
+      const sd=Math.sqrt(vs.reduce((a,b)=>a+(b-m)*(b-m),0)/vs.length);
+      return {m, sd};
     };
-    const comps=[];
-    if(store.rhr[hoje]!=null){
-      const b=baseAnt(store.rhr,hoje);
-      comps.push({k:"FC repouso",v:store.rhr[hoje]+" bpm",
-        score:b?clamp(50-((store.rhr[hoje]-b)/b)*500):50,bom:b?store.rhr[hoje]<=b:true});
+    const scoreRHR=(v,st)=>{ const sd=Math.max(st.sd, st.m*0.02, 1.2); return clamp(50+((st.m-v)/sd)*18); };
+    const scoreHRV=(v,st)=>{ const sd=Math.max(st.sd, st.m*0.05, 2);   return clamp(50+((v-st.m)/sd)*18); };
+    const scoreSono=h=> h>=7.5 ? clamp(88+(h-7.5)*4) : clamp((h-3.5)/4*88); // 3.5h=0 · 5.5h=44 · 7.5h=88
+    const diffDias=(a,b)=>Math.round((Date.parse(a)-Date.parse(b))/864e5);
+
+    const dias=[...new Set([...rhrDays,...hrvDays,...sonoDaysAll])].sort();
+    const serie=[]; let ultSono=null, ultSonoDia=null;
+    for(const d of dias){
+      const comps=[];
+      if(store.rhr[d]!=null){ const st=statPrior(store.rhr,d);
+        comps.push({k:"FC repouso",v:store.rhr[d]+" bpm",score:st?scoreRHR(store.rhr[d],st):50,bom:st?store.rhr[d]<=st.m:true}); }
+      if(hrvStore[d]!=null){ const st=statPrior(hrvStore,d);
+        comps.push({k:"HRV",v:hrvStore[d]+" ms",score:st?scoreHRV(hrvStore[d],st):50,bom:st?hrvStore[d]>=st.m:true}); }
+      // sono do dia; se faltar, carrega a última noite até 2 dias atrás
+      let hSono=null, sonoOntem=false;
+      if(store.sleep[d]){ hSono=store.sleep[d].h; ultSono=hSono; ultSonoDia=d; }
+      else if(ultSono!=null && ultSonoDia && diffDias(d,ultSonoDia)<=2){ hSono=ultSono; sonoOntem=true; }
+      if(hSono!=null) comps.push({k:"Sono",v:hSono.toFixed(1)+" h"+(sonoOntem?" (ontem)":""),score:scoreSono(hSono),bom:hSono>=7});
+      if(!comps.length) continue;
+      const score=Math.round(comps.reduce((a,c)=>a+c.score,0)/comps.length);
+      const faixa=score>=70?"pronto":score>=45?"moderado":"recuperar";
+      const faltam=["FC repouso","HRV","Sono"].filter(n=>!comps.find(x=>x.k===n));
+      serie.push({iso:d, d:fmtDia(d), score, faixa, comps, parcial:comps.length<3, faltam});
     }
-    if(hrvStore[hoje]!=null){
-      const b=baseAnt(hrvStore,hoje);
-      comps.push({k:"HRV",v:hrvStore[hoje]+" ms",
-        score:b?clamp(50+((hrvStore[hoje]-b)/b)*250):50,bom:b?hrvStore[hoje]>=b:true});
-    }
-    if(store.sleep[hoje]){
-      const h=store.sleep[hoje].h;
-      comps.push({k:"Sono",v:h.toFixed(1)+" h",score:clamp((h-3)/5*100),bom:h>=7});
-    }
-    if(!comps.length) return null;
-    const score=Math.round(comps.reduce((a,c)=>a+c.score,0)/comps.length);
-    const faixa = score>=70?"pronto" : score>=45?"moderado" : "recuperar";
-    return {hoje, score, comps, faixa, parcial:comps.length<3};
+    return serie;
   })();
+  const readiness = readinessSerie.length ? {...readinessSerie[readinessSerie.length-1],
+                        hoje:readinessSerie[readinessSerie.length-1].iso} : null;
 
   /* ====== janela de período (só afeta exibição/totais) ====== */
   const todasDatas=[...days,...sonoDaysAll,...rhrDays,...hrvDays].sort();
@@ -697,8 +728,10 @@ function computeAll(store, periodo){
   treinos.forEach(t=>t.zonas.forEach((m,i)=>zonasTot[i]+=m));
   const comZona=treinos.filter(t=>t.temZona).length;
 
+  const readinessWin = readinessSerie.filter(p=>p.iso>=cutoff);
+
   return {dias,kcalArr,cheios,merged:mergedWin,dup,totMod,totMin,modNames,weekRows,
-    sono,mediaSono,sub7,sub6,drift,ultimo,P1,P2,P3,acr,readiness,
+    sono,mediaSono,sub7,sub6,drift,ultimo,P1,P2,P3,acr,readiness,readinessSerie,readinessWin,
     periodo: periodo||null, treinos, zonasTot, comZona, hrMax, hrMaxAuto,
     totais:{kcal:Math.round(cheios.reduce((a,d)=>a+d.kcal,0)), dias:cheios.length}};
 }
@@ -838,11 +871,19 @@ function render(){
       <div class="rd-right">
         <div class="rd-verdict" style="color:${cor}">${verdict}</div>
         <div class="rd-comps">${compsHtml}</div>
-        ${R.parcial?`<div class="rd-note">parcial — faltam sinais de hoje: ${["FC repouso","HRV","Sono"].filter(n=>!R.comps.find(x=>x.k===n)).join(", ")}</div>`:""}
+        ${R.parcial&&R.faltam&&R.faltam.length?`<div class="rd-note">parcial — faltam sinais de hoje: ${R.faltam.join(", ")}</div>`:""}
       </div>`;
     rc.appendChild(body);
+    // tendência ao longo do tempo (respeita o filtro de período)
+    if(A.readinessWin && A.readinessWin.length>1){
+      const lab=document.createElement("div");
+      lab.style.cssText="font-family:var(--mono);font-size:10.5px;color:var(--muted);margin:16px 0 4px";
+      lab.textContent="Prontidão ao longo do tempo";
+      rc.appendChild(lab);
+      rc.appendChild(chartReadiness(A.readinessWin));
+    }
     const cap=document.createElement("p");cap.className="caption";
-    cap.textContent="Combina FC de repouso, HRV e sono da noite (peso igual), cada um comparado à sua média recente. Verde = pronto · amarelo = moderado · vermelho = recuperar.";
+    cap.textContent="Compara FC de repouso, HRV e sono à sua linha de base pessoal (em desvios-padrão dos últimos ~60 dias), com peso igual. Variação normal fica perto de 50; só um desvio real puxa a nota para os extremos. Verde = pronto · amarelo = moderado · vermelho = recuperar.";
     rc.appendChild(cap);
     app.appendChild(rc);
   }
