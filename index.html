@@ -81,11 +81,17 @@ h2{font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:500;
 .alerta .tag{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
   color:var(--hot);border:1px solid var(--hot);border-radius:3px;padding:2px 6px;white-space:nowrap;flex-shrink:0}
 .alerta b{color:var(--text)}
-.ribbon{display:flex;gap:2px;align-items:flex-end;height:120px;width:100%;overflow:hidden}
-.rcol{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:4px;height:100%}
-.rtrack{flex:1;display:flex;align-items:flex-end}
+.pulse{display:flex;gap:8px;align-items:flex-start}
+.ryaxis{position:relative;width:34px;height:120px;flex-shrink:0}
+.ryaxis span{position:absolute;right:0;transform:translateY(50%);font-family:var(--mono);font-size:8.5px;color:var(--muted);white-space:nowrap;line-height:1}
+.rplotcol{flex:1;min-width:0}
+.rplot{position:relative;height:120px}
+.rgridline{position:absolute;left:0;right:0;border-top:1px dashed var(--line);pointer-events:none}
+.ribbon{display:flex;gap:2px;align-items:flex-end;height:100%;width:100%;overflow:hidden}
+.rcol{flex:1 1 0;min-width:0;display:flex;align-items:flex-end;height:100%}
 .rbar{width:100%;border-radius:2px}
-.rdow{font-family:var(--mono);font-size:7.5px;text-align:center;color:var(--muted);overflow:hidden;white-space:nowrap}
+.rdowrow{display:flex;gap:2px;margin-top:5px}
+.rdowrow span{flex:1 1 0;min-width:0;text-align:center;font-family:var(--mono);font-size:7.5px;color:var(--muted);overflow:hidden;white-space:nowrap}
 .legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:12px}
 .key{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10px;color:var(--muted)}
 .kdot{width:8px;height:8px;border-radius:2px;flex-shrink:0}
@@ -135,7 +141,7 @@ svg{display:block;width:100%;overflow:visible}
 </head>
 <body>
 <div class="wrap">
-  <div class="eyebrow">Amazfit T-Rex 3 · Apple Saúde · <span style="color:#5FA87C">v10 · prontidão</span></div>
+  <div class="eyebrow">Amazfit T-Rex 3 · Apple Saúde · <span style="color:#5FA87C">v11 · eixo pulso</span></div>
   <h1>Carga<span style="color:var(--hot)">.</span></h1>
   <p class="sub" id="subtitle">Importe os arquivos do Health Auto Export (métricas + treinos). O app guarda o histórico neste iPhone e acrescenta os dias novos a cada importação.</p>
 
@@ -889,23 +895,41 @@ function render(){
   }
 
   // pulso
-  const rib=document.createElement("div");rib.className="ribbon";
   const maxK=A.cheios.length?Math.max(...A.cheios.map(d=>d.kcal)):1;
   const mostraDow=A.dias.length<=31;  // rótulos de dia só cabem em janelas curtas
+  // barras
+  const rib=document.createElement("div");rib.className="ribbon";
   A.dias.forEach(d=>{const col=document.createElement("div");col.className="rcol";
     col.title=`${d.label} · ${d.kcal!=null?num(d.kcal)+" kcal":"sem dados"}`;
-    const tr=document.createElement("div");tr.className="rtrack";
     const b=document.createElement("div");b.className="rbar";
-    b.style.height=(d.kcal!=null?Math.max(6,d.kcal/maxK*100):6)+"%";
+    b.style.height=(d.kcal!=null?Math.max(2,d.kcal/maxK*100):2)+"%";
     b.style.background=ramp(d.kcal);b.style.opacity=d.kcal!=null?1:.35;
-    tr.appendChild(b);col.appendChild(tr);
-    if(mostraDow){
-      const dw=document.createElement("div");dw.className="rdow";
-      dw.textContent=DIAS[d.dow][0].toUpperCase();
-      if(d.dow===1)dw.style.color=C.hot;col.appendChild(dw);
-    }
-    rib.appendChild(col);});
-  const pc=card("O pulso",'altura = energia · cor = faixa',rib);
+    col.appendChild(b);rib.appendChild(col);});
+  // área do gráfico com linhas de faixa (600 / 1.000)
+  const plot=document.createElement("div");plot.className="rplot";
+  [600,1000].filter(v=>v<=maxK).forEach(v=>{const ln=document.createElement("div");
+    ln.className="rgridline";ln.style.bottom=(v/maxK*100)+"%";plot.appendChild(ln);});
+  plot.appendChild(rib);
+  // eixo Y à esquerda com a escala de energia e as faixas
+  const yax=document.createElement("div");yax.className="ryaxis";
+  const niveis=[0,600,1000].filter(v=>v<=maxK);
+  const topo=Math.round(maxK);
+  if(!niveis.length || (topo-niveis[niveis.length-1])/maxK>0.12) niveis.push(topo);
+  niveis.forEach(v=>{const sp=document.createElement("span");
+    sp.style.bottom=(v/maxK*100)+"%";sp.textContent=num(v);yax.appendChild(sp);});
+  // coluna do gráfico + rótulos de dia da semana embaixo
+  const plotcol=document.createElement("div");plotcol.className="rplotcol";
+  plotcol.appendChild(plot);
+  if(mostraDow){
+    const dowrow=document.createElement("div");dowrow.className="rdowrow";
+    A.dias.forEach(d=>{const sp=document.createElement("span");
+      sp.textContent=DIAS[d.dow][0].toUpperCase();
+      if(d.dow===1)sp.style.color=C.hot;dowrow.appendChild(sp);});
+    plotcol.appendChild(dowrow);
+  }
+  const pulse=document.createElement("div");pulse.className="pulse";
+  pulse.appendChild(yax);pulse.appendChild(plotcol);
+  const pc=card("O pulso",'altura = energia (kcal) · cor = faixa',pulse);
   const lg=document.createElement("div");lg.className="legend";
   [[C.cool,"< 600"],[C.mid,"600–1.000"],[C.hot,"> 1.000"],[C.ghost,"sem dados"]]
     .forEach(([c,t])=>{const k=document.createElement("span");k.className="key";
